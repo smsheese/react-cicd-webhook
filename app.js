@@ -1,56 +1,149 @@
-require('dotenv').config();  // Load environment variables from .env
 const express = require('express');
 const bodyParser = require('body-parser');
 const simpleGit = require('simple-git');
 const { exec } = require('child_process');
 const crypto = require('crypto');
-const fetch = require('node-fetch');
-const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
+require('dotenv').config();
+const cron = require('node-cron');
 
 const app = express();
 app.use(bodyParser.json());
 
-const secret = process.env.WEBHOOK_SECRET;
-const repoPath = process.env.REPO_PATH;
-const buildPath = path.join(repoPath, 'build');
-const deployPath = process.env.DEPLOY_PATH;
-const git = simpleGit(repoPath);
-const branchName = process.env.BRANCH_NAME || 'PROD';  // Default to 'PROD'
-const ownerUser = process.env.FILE_OWNER_USER;
-const port = process.env.APP_PORT || 4000;
-
-// Telegram credentials from .env
-const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+const secret = process.env.GITHUB_SECRET;  // GitHub webhook secret token
+const repoPath = process.env.REPO_PATH || '/home/tfsbs/unidiner/Unidiner-POS-FE-Web';  // Path to your React project
+const gitRepoUrl = process.env.GIT_REPO_URL;  // Git repository URL
+const branch = process.env.GIT_BRANCH || 'PROD';  // Git branch to pull
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+const fileOwner = process.env.FILE_OWNER || 'unidiner';  // File owner
+const appPort = process.env.APP_PORT || 4000;  // Application port
 
-// Send a Telegram message
-const sendTelegramMessage = async (message) => {
-    const url = `https://api.telegram.org/bot${telegramToken}/sendMessage`;
-    const payload = {
-        chat_id: telegramChatId,
-        text: message
-    };
+// Options for installation and build
+const useLegacyPeerDeps = process.env.USE_LEGACY_PEER_DEPS === 'true'; // Enable legacy-peer-deps
+const useForce = process.env.USE_FORCE === 'true'; // Enable force install
+const useAuditFix = process.env.USE_AUDIT_FIX === 'true'; // Enable audit fix
 
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+const git = simpleGit(repoPath);
 
-        const data = await response.json();
-        if (!data.ok) {
-            console.error('Failed to send Telegram message:', data.description);
-        } else {
-            console.log('Telegram message sent successfully');
-        }
-    } catch (error) {
-        console.error('Error sending Telegram message:', error);
+// Function to send Telegram message
+const sendTelegramMessage = (message) => {
+    if (telegramBotToken && telegramChatId) {
+        const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+        axios.post(url, {
+            chat_id: telegramChatId,
+            text: message
+        })
+        .then(() => console.log('Telegram notification sent successfully'))
+        .catch(err => console.error('Error sending Telegram message:', err));
     }
 };
 
-app.post('/webhook', (req, res) => {
+// Clone the repository if not already present
+const cloneRepoIfNeeded = async () => {
+    if (!fs.existsSync(repoPath)) {
+        console.log('Repository not found at path, cloning...');
+        try {
+            await git.clone(gitRepoUrl, repoPath, ['--branch', branch]);
+            console.log(`Repository cloned to ${repoPath}`);
+        } catch (err) {
+            console.error('Git Clone Error:', err);
+            sendTelegramMessage(`🚫 Error cloning repo: ${err.message}`);
+        }
+    } else {
+        console.log('Repository already exists at path:', repoPath);
+    }
+};
+
+// Set ownership of the build folder
+const setOwnership = () => {
+    return new Promise((resolve, reject) => {
+        exec(`chown -R ${fileOwner}:${fileOwner} /home/unidiner/fe.unidiner.com/public`, (err, stdout, stderr) => {
+            if (err) {
+                console.error('Ownership change error:', err, stderr);
+                return reject(err);
+            }
+            console.log('Ownership set successfully:', stdout);
+            resolve();
+        });
+    });
+};
+
+// Move build folder to the public directory
+const moveBuildFolder = () => {
+    return new Promise((resolve, reject) => {
+        exec(`mv ${repoPath}/build/* /home/unidiner/fe.unidiner.com/public`, (err, stdout, stderr) => {
+            if (err) {
+                console.error('Error moving build folder:', err, stderr);
+                return reject(err);
+            }
+            console.log('Build folder moved successfully:', stdout);
+            resolve();
+        });
+    });
+};
+
+// Build process function
+const runBuildProcess = async () => {
+    console.log('Starting build process...');
+
+    await cloneRepoIfNeeded();
+
+    console.log(`Pulling the latest code from ${branch} branch...`);
+    const pullResult = await git.pull('origin', branch);
+    
+    if (pullResult && pullResult.summary.changes) {
+        let installCommand = 'npm install';
+        if (useLegacyPeerDeps) installCommand += ' --legacy-peer-deps';
+        if (useForce) installCommand += ' --force';
+        
+        console.log('Running:', installCommand);
+        exec(`${installCommand}${useAuditFix ? ' && npm audit fix' : ''}`, { cwd: repoPath }, async (err, stdout, stderr) => {
+            if (err) {
+                console.error('NPM Install Error:', err, stderr);
+                sendTelegramMessage(`🚫 NPM Install Error: ${err.message}`);
+                return;
+            }
+            console.log('NPM install successful:', stdout);
+
+            console.log('Running npm run build...');
+            exec('npm run build', { cwd: repoPath }, async (err, stdout, stderr) => {
+                if (err) {
+                    console.error('Build Error:', err, stderr);
+                    sendTelegramMessage(`🚫 Build Error: ${err.message}`);
+                    return;
+                }
+                console.log('Build Success:', stdout);
+                sendTelegramMessage('✅ Build completed successfully.');
+
+                // Move build folder and set permissions
+                try {
+                    await moveBuildFolder();
+                    await setOwnership();
+                    sendTelegramMessage('✅ Build folder moved and permissions set.');
+                } catch (err) {
+                    console.error('Error in post-build steps:', err);
+                    sendTelegramMessage(`🚫 Post-build Error: ${err.message}`);
+                }
+            });
+        });
+    } else {
+        console.log('No changes detected in the pull');
+        sendTelegramMessage('🔄 No changes detected in the pull.');
+    }
+};
+
+// Schedule build process
+const scheduleBuildProcess = (cronTime) => {
+    cron.schedule(cronTime, () => {
+        console.log('Scheduled build process running...');
+        runBuildProcess();
+    });
+};
+
+// Webhook handler
+app.post('/webhook', async (req, res) => {
     console.log('Received webhook');
 
     // Verify GitHub signature to ensure request authenticity
@@ -63,72 +156,18 @@ app.post('/webhook', (req, res) => {
     const { ref } = req.body;
     console.log('Webhook for branch:', ref);
 
-    // Check if the pushed branch is the one we're interested in
-    if (ref === `refs/heads/${branchName}`) {
-        console.log(`Pulling the latest code from ${branchName} branch...`);
+    // Notify of new commit and scheduled build
+    sendTelegramMessage(`📦 New commit detected on branch ${branch}. Scheduled build process will run at ${process.env.SCHEDULED_TIME}. Reply with /forcebuild to trigger immediately.`);
 
-        sendTelegramMessage(`Build process started for branch ${branchName}`);
+    // If specific user replies with /forcebuild, trigger build immediately
+    // This requires Telegram Bot API to handle messages, which would be implemented separately.
 
-        git.pull('origin', branchName, (err, update) => {
-            if (err) {
-                console.error('Git Pull Error:', err);
-                sendTelegramMessage(`Git Pull Error: ${err.message}`);
-                return res.sendStatus(500);
-            }
-
-            if (update && update.summary.changes) {
-                console.log('Git pull successful. Running npm install...');
-
-                exec('npm install', { cwd: repoPath }, (err, stdout, stderr) => {
-                    if (err) {
-                        console.error('NPM Install Error:', err, stderr);
-                        sendTelegramMessage(`NPM Install Error: ${stderr}`);
-                        return res.sendStatus(500);
-                    }
-                    console.log('NPM install successful:', stdout);
-
-                    console.log('Running npm audit fix...');
-                    exec('npm audit fix', { cwd: repoPath }, (err, stdout, stderr) => {
-                        if (err) {
-                            console.error('NPM Audit Fix Error:', err, stderr);
-                            sendTelegramMessage(`NPM Audit Fix Error: ${stderr}`);
-                            return res.sendStatus(500);
-                        }
-                        console.log('NPM audit fix successful:', stdout);
-
-                        console.log('Running npm run build...');
-                        exec('npm run build', { cwd: repoPath }, (err, stdout, stderr) => {
-                            if (err) {
-                                console.error('Build Error:', err, stderr);
-                                sendTelegramMessage(`Build Error: ${stderr}`);
-                                return res.sendStatus(500);
-                            }
-                            console.log('Build Success:', stdout);
-
-                            console.log(`Moving build files to ${deployPath}...`);
-                            exec(`rsync -av --delete ${buildPath}/ ${deployPath}/ && chown -R ${ownerUser}:${ownerUser} ${deployPath}`, (err, stdout, stderr) => {
-                                if (err) {
-                                    console.error('File Move/Permission Error:', err, stderr);
-                                    sendTelegramMessage(`File Move/Permission Error: ${stderr}`);
-                                    return res.sendStatus(500);
-                                }
-                                console.log('Build files moved and permissions set successfully:', stdout);
-                                sendTelegramMessage(`Build and deployment successful for branch ${branchName}`);
-                                res.sendStatus(200);
-                            });
-                        });
-                    });
-                });
-            } else {
-                console.log('No changes detected in the pull');
-                res.sendStatus(200); // No changes
-            }
-        });
-    } else {
-        console.log(`Not the ${branchName} branch, ignoring`);
-        res.sendStatus(200); // Ignore other branches
-    }
+    res.sendStatus(200);
 });
 
 // Start the server
-app.listen(port, () => console.log(`Webhook listener running on port ${port}`));
+app.listen(appPort, () => {
+    console.log(`Webhook listener running on port ${appPort}`);
+    // Schedule the build process at a specified time
+    scheduleBuildProcess(process.env.SCHEDULED_TIME || '0 3 * * *'); // Default to run at 3 AM daily
+});
