@@ -1,21 +1,26 @@
+require('dotenv').config();  // Load environment variables from .env
 const express = require('express');
 const bodyParser = require('body-parser');
 const simpleGit = require('simple-git');
 const { exec } = require('child_process');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(bodyParser.json());
 
-const secret = 'secret_token';  // Set your GitHub webhook secret token
-const repoPath = '/home/user/repo-path';  // Path to your React project
+const secret = process.env.WEBHOOK_SECRET;  // GitHub webhook secret from .env
+const repoPath = process.env.REPO_PATH;     // Path to the React project from .env
+const buildPath = path.join(repoPath, 'build');
+const deployPath = process.env.DEPLOY_PATH; // Deployment path from .env
 const git = simpleGit(repoPath);
 
 app.post('/webhook', (req, res) => {
     console.log('Received webhook');
 
     // Verify GitHub signature to ensure request authenticity
-    const sig = sha256=${crypto.createHmac('sha256', secret).update(JSON.stringify(req.body)).digest('hex')};
+    const sig = `sha256=${crypto.createHmac('sha256', secret).update(JSON.stringify(req.body)).digest('hex')}`;
     if (req.headers['x-hub-signature-256'] !== sig) {
         console.error('Invalid signature');
         return res.sendStatus(403);
@@ -45,14 +50,32 @@ app.post('/webhook', (req, res) => {
                     }
                     console.log('NPM install successful:', stdout);
 
-                    console.log('Running npm run build...');
-                    exec('npm run build', { cwd: repoPath }, (err, stdout, stderr) => {
+                    console.log('Running npm audit fix...');
+                    exec('npm audit fix', { cwd: repoPath }, (err, stdout, stderr) => {
                         if (err) {
-                            console.error('Build Error:', err, stderr);
+                            console.error('NPM Audit Fix Error:', err, stderr);
                             return res.sendStatus(500);
                         }
-                        console.log('Build Success:', stdout);
-                        res.sendStatus(200);
+                        console.log('NPM audit fix successful:', stdout);
+
+                        console.log('Running npm run build...');
+                        exec('npm run build', { cwd: repoPath }, (err, stdout, stderr) => {
+                            if (err) {
+                                console.error('Build Error:', err, stderr);
+                                return res.sendStatus(500);
+                            }
+                            console.log('Build Success:', stdout);
+
+                            console.log(`Moving build files to ${deployPath}...`);
+                            exec(`rsync -av --delete ${buildPath}/ ${deployPath}/ && chown -R unidiner:unidiner ${deployPath}`, (err, stdout, stderr) => {
+                                if (err) {
+                                    console.error('File Move/Permission Error:', err, stderr);
+                                    return res.sendStatus(500);
+                                }
+                                console.log('Build files moved and permissions set successfully:', stdout);
+                                res.sendStatus(200);
+                            });
+                        });
                     });
                 });
             } else {
