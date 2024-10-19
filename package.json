@@ -1,0 +1,33 @@
+{
+    "name": "react-cicd-webhook",
+    "version": "1.0.4",
+    "description": "A Node.js webhook listener for GitHub to automate React app deployment and notify via Telegram.",
+    "main": "index.js",
+    "scripts": {
+      "start": "node index.js",
+      "build": "npm run build"
+    },
+    "dependencies": {
+      "body-parser": "latest",
+      "dotenv": "latest",
+      "express": "latest",
+      "node-cron": "latest",
+      "simple-git": "latest",
+      "axios": "latest",
+      "child_process": "latest",
+      "crypto": "latest"
+    },
+    "engines": {
+      "node": ">=18.0.0"
+    },
+    "keywords": [
+      "webhook",
+      "GitHub",
+      "React",
+      "Node.js",
+      "Telegram"
+    ],
+    "author": "Sheese Sheikh",
+    "license": "MIT"
+  }
+  
