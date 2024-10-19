@@ -1,16 +1,20 @@
 require('dotenv').config(); // Load environment variables from .env
 
 module.exports = {
-  apps: [
-    {
-      name: 'cicd-webhook',        // Name of the app in PM2
-      script: './app.js',          // Path to your app's entry point (app.js)
-      watch: true,                 // Optional: Restarts on file changes
-      env: {
-        NODE_ENV: process.env.NODE_ENV || 'production'  // Use environment variable or default to 'production'
-      },
-      output: './logs/output.log',   // Log output
-      error: './logs/error.log',     // Error log
-    }
-  ]
+    apps: [
+      {
+        name: 'cicd-webhook',
+        script: './app.js',
+        watch: true,
+        watch_options: {
+          followSymlinks: false,
+          ignored: ['logs/*'], // Ignore log files
+        },
+        env: {
+          NODE_ENV: process.env.NODE_ENV || 'production'
+        },
+        output: './logs/output.log',
+        error: './logs/error.log',
+      }
+    ]
 };
