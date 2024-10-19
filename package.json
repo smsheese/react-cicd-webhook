@@ -1,6 +1,6 @@
 {
     "name": "react-cicd-webhook",
-    "version": "1.0.4",
+    "version": "1.0.6",
     "description": "A Node.js webhook listener for GitHub to automate React app deployment and notify via Telegram.",
     "main": "index.js",
     "scripts": {
