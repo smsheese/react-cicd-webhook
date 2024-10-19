@@ -3,6 +3,7 @@ const bodyParser = require('body-parser');
 const simpleGit = require('simple-git');
 const { exec } = require('child_process');
 const crypto = require('crypto');
+const authorizedUsers = process.env.AUTHORIZED_USERS ? process.env.AUTHORIZED_USERS.split(',') : [];
 const fs = require('fs');
 const axios = require('axios');
 require('dotenv').config();
@@ -93,50 +94,57 @@ const moveBuildFolder = () => {
 // Build process function
 const runBuildProcess = async () => {
     console.log('Starting build process...');
-
-    await cloneRepoIfNeeded();
-
-    console.log(`Pulling the latest code from ${branch} branch...`);
-    const pullResult = await git.pull('origin', branch);
     
-    if (pullResult && pullResult.summary.changes) {
-        let installCommand = 'npm install';
-        if (useLegacyPeerDeps) installCommand += ' --legacy-peer-deps';
-        if (useForce) installCommand += ' --force';
-        
-        console.log('Running:', installCommand);
-        exec(`${installCommand}${useAuditFix ? ' && npm audit fix' : ''}`, { cwd: repoPath }, async (err, stdout, stderr) => {
-            if (err) {
-                console.error('NPM Install Error:', err, stderr);
-                sendTelegramMessage(`🚫 NPM Install Error: ${err.message}`);
-                return;
-            }
-            console.log('NPM install successful:', stdout);
+    try {
+        await cloneRepoIfNeeded();
 
-            console.log('Running npm run build...');
-            exec('npm run build', { cwd: repoPath }, async (err, stdout, stderr) => {
+        console.log(`Pulling the latest code from ${branch} branch...`);
+        const pullResult = await git.pull('origin', branch);
+        
+        if (pullResult && pullResult.summary.changes) {
+            console.log('Changes detected, proceeding with npm install...');
+            
+            let installCommand = 'npm install';
+            if (useLegacyPeerDeps) installCommand += ' --legacy-peer-deps';
+            if (useForce) installCommand += ' --force';
+            
+            console.log('Running:', installCommand);
+            exec(`${installCommand}${useAuditFix ? ' && npm audit fix' : ''}`, { cwd: repoPath }, async (err, stdout, stderr) => {
                 if (err) {
-                    console.error('Build Error:', err, stderr);
-                    sendTelegramMessage(`🚫 Build Error: ${err.message}`);
+                    console.error('NPM Install Error:', err, stderr);
+                    sendTelegramMessage(`🚫 NPM Install Error: ${err.message}`);
                     return;
                 }
-                console.log('Build Success:', stdout);
-                sendTelegramMessage('✅ Build completed successfully.');
+                console.log('NPM install successful:', stdout);
 
-                // Move build folder and set permissions
-                try {
-                    await moveBuildFolder();
-                    await setOwnership();
-                    sendTelegramMessage('✅ Build folder moved and permissions set.');
-                } catch (err) {
-                    console.error('Error in post-build steps:', err);
-                    sendTelegramMessage(`🚫 Post-build Error: ${err.message}`);
-                }
+                console.log('Running npm run build...');
+                exec('npm run build', { cwd: repoPath }, async (err, stdout, stderr) => {
+                    if (err) {
+                        console.error('Build Error:', err, stderr);
+                        sendTelegramMessage(`🚫 Build Error: ${err.message}`);
+                        return;
+                    }
+                    console.log('Build Success:', stdout);
+                    sendTelegramMessage('✅ Build completed successfully.');
+
+                    // Move build folder and set permissions
+                    try {
+                        await moveBuildFolder();
+                        await setOwnershipAndPermissions();
+                        sendTelegramMessage('✅ Build folder moved and permissions set.');
+                    } catch (err) {
+                        console.error('Error in post-build steps:', err);
+                        sendTelegramMessage(`🚫 Post-build Error: ${err.message}`);
+                    }
+                });
             });
-        });
-    } else {
-        console.log('No changes detected in the pull');
-        sendTelegramMessage('🔄 No changes detected in the pull.');
+        } else {
+            console.log('No changes detected in the pull');
+            sendTelegramMessage('🔄 No changes detected in the pull.');
+        }
+    } catch (error) {
+        console.error('Error in runBuildProcess:', error);
+        sendTelegramMessage(`🚫 Error in build process: ${error.message}`);
     }
 };
 
@@ -146,6 +154,36 @@ const scheduleBuildProcess = (cronTime) => {
         console.log('Scheduled build process running...');
         runBuildProcess();
     });
+};
+
+// Function to listen for Telegram /forcebuild command
+const listenForTelegramCommands = () => {
+    const telegramBotUrl = `https://api.telegram.org/bot${telegramBotToken}/getUpdates`;
+
+    setInterval(async () => {
+        try {
+            const response = await axios.get(telegramBotUrl);
+            const updates = response.data.result;
+
+            // Process each message
+            updates.forEach(update => {
+                const message = update.message;
+                if (message && message.text === '/forcebuild') {
+                    const userId = message.from.id;
+
+                    // Check if the user is authorized
+                    if (authorizedUsers.includes(String(userId))) {
+                        sendTelegramMessage('✅ Force build command received. Starting build process...');
+                        runBuildProcess();  // Trigger the build process
+                    } else {
+                        sendTelegramMessage('🚫 You are not authorized to run the build.');
+                    }
+                }
+            });
+        } catch (err) {
+            console.error('Error fetching Telegram updates:', err);
+        }
+    }, 5000);  // Poll Telegram API every 5 seconds
 };
 
 // Webhook handler
@@ -174,6 +212,8 @@ app.post('/webhook', async (req, res) => {
 // Start the server
 app.listen(appPort, () => {
     console.log(`Webhook listener running on port ${appPort}`);
-    // Schedule the build process at a specified time
     scheduleBuildProcess(process.env.SCHEDULED_TIME || '0 3 * * *'); // Default to run at 3 AM daily
+    
+    // Start listening for Telegram commands
+    listenForTelegramCommands();
 });

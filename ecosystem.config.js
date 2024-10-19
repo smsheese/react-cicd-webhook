@@ -8,7 +8,9 @@ module.exports = {
       watch: true,                 // Optional: Restarts on file changes
       env: {
         NODE_ENV: process.env.NODE_ENV || 'production'  // Use environment variable or default to 'production'
-      }
+      },
+      output: './logs/output.log',   // Log output
+      error: './logs/error.log',     // Error log
     }
   ]
 };
