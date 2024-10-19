@@ -12,12 +12,13 @@ const app = express();
 app.use(bodyParser.json());
 
 const secret = process.env.GITHUB_SECRET;  // GitHub webhook secret token
-const repoPath = process.env.REPO_PATH || '/home/tfsbs/unidiner/Unidiner-POS-FE-Web';  // Path to your React project
+const repoPath = process.env.REPO_PATH;  // Path to your React project
 const gitRepoUrl = process.env.GIT_REPO_URL;  // Git repository URL
-const branch = process.env.GIT_BRANCH || 'PROD';  // Git branch to pull
+const branch = process.env.GIT_BRANCH || 'main';  // Git branch to pull
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
-const fileOwner = process.env.FILE_OWNER || 'unidiner';  // File owner
+const buildPath = process.env.BUILD_PATH;  // Path to your build project
+const buildOwner = process.env.BUILD_OWNER;  // Build path owner
 const appPort = process.env.APP_PORT || 4000;  // Application port
 
 // Options for installation and build
@@ -56,15 +57,20 @@ const cloneRepoIfNeeded = async () => {
     }
 };
 
-// Set ownership of the build folder
-const setOwnership = () => {
+// Set ownership and permissions of the build folder
+const setOwnershipAndPermissions = () => {
     return new Promise((resolve, reject) => {
-        exec(`chown -R ${fileOwner}:${fileOwner} /home/unidiner/fe.unidiner.com/public`, (err, stdout, stderr) => {
+        const commands = `
+            chown -R ${fileOwner}:${fileOwner} ${buildPath} && \
+            find ${buildPath} -type d -exec chmod 755 {} \\; && \
+            find ${buildPath} -type f -exec chmod 644 {} \\;
+        `;
+        exec(commands, (err, stdout, stderr) => {
             if (err) {
-                console.error('Ownership change error:', err, stderr);
+                console.error('Ownership or permissions change error:', err, stderr);
                 return reject(err);
             }
-            console.log('Ownership set successfully:', stdout);
+            console.log('Ownership and permissions set successfully:', stdout);
             resolve();
         });
     });
@@ -73,7 +79,7 @@ const setOwnership = () => {
 // Move build folder to the public directory
 const moveBuildFolder = () => {
     return new Promise((resolve, reject) => {
-        exec(`mv ${repoPath}/build/* /home/unidiner/fe.unidiner.com/public`, (err, stdout, stderr) => {
+        exec(`mv ${repoPath}/build/* ${buildPath}`, (err, stdout, stderr) => {
             if (err) {
                 console.error('Error moving build folder:', err, stderr);
                 return reject(err);
